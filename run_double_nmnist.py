@@ -76,7 +76,7 @@ def totorch(x):
 
 def train_on_batch(model, data, targets, loss_fn, opt_fn):
     model.train()
-    x = totorch(data)
+    x = totorch(data[:,0])
     y = totorch(targets)
     model.zero_grad()
     opt_fn.zero_grad()
@@ -109,15 +109,15 @@ def accuracy(model, dl):
     return torch.mean(torch.Tensor(acc))
 
 
-niterations = 100000
-nvals =5
+niterations = 10000
+nvals = 5
 n_ways = 5
 k_shots = 10
 k_shots_test = 1
 inner_epochs = 5
-meta_eval_epochs = 5
-inner_batch_size = 10
-outerstepsize0 = .025
+meta_eval_epochs = 50
+inner_batch_size = 5
+outerstepsize0 = 1.0
 ntasks_per_inner = 5
 
 #train_dataset = doublemnist('data', shots=10, ways=n_ways, shuffle=True, meta_split = "train", test_shots=15, download=True)
@@ -127,6 +127,10 @@ ntasks_per_inner = 5
 dls = []
 for i in range(nvals):
     dls.append( create_doublenmnist(batch_size = inner_batch_size, shots=k_shots_test, ways=n_ways, mtype='val', ds=2))
+
+dlsdt = []
+for i in range(nvals):
+    dlsdt.append( next(iter(create_doublenmnist(batch_size = inner_batch_size, shots=k_shots_test, ways=n_ways, mtype='val', ds=2)[0])))
 
 #meta-test evaluation
 model = Naive().cuda()
@@ -138,39 +142,48 @@ model_meta.load_state_dict(deepcopy(model.state_dict()))
 model_step.load_state_dict(deepcopy(model.state_dict()))                           
 loss_fn = torch.nn.CrossEntropyLoss()
 opt_fn = torch.optim.Adam(model_step.parameters(), lr=1e-3)
-meta_opt_fn = torch.optim.SGD(model_meta.parameters(), lr=1e-2)
+meta_opt_fn = torch.optim.SGD(model_meta.parameters(), lr=1e-3)
 
 
 acc_s = []
 acc_ = 0
-for iteration in range(niterations):
+for iteration in tqdm(range(niterations)):
     #outer loop
     weights_before = deepcopy(model.state_dict())
     weights_after_tasks = [None for i in range(ntasks_per_inner)]
     for task_id in range(ntasks_per_inner):
         train_dl, test_dl = create_doublenmnist(batch_size = inner_batch_size, shots=k_shots, ways=n_ways, mtype='train', ds=2)
         model_step.load_state_dict(model.state_dict())
+        idl = iter(train_dl)
+
         for i in range(inner_epochs):
-            l = train_on_batch_dl(model_step,
-                               train_dl,
+            data, targets = next(idl)
+            l = train_on_batch(model_step,
+                               data, targets,
                                loss_fn,
                                opt_fn)
             weights_after_tasks[task_id] = deepcopy(model_step.state_dict())
-        acc_inner_train = accuracy(model_step, train_dl)
-        acc_inner_test = accuracy(model_step, test_dl)
-            
+           
     outerstepsize = outerstepsize0 * (1 - (iteration / niterations)) # linear schedule
     model.load_state_dict({name : weights_before[name] + (sum([weights_after_tasks[i][name]/float(ntasks_per_inner) for i in range(ntasks_per_inner)]) - weights_before[name])  * outerstepsize for name in weights_before})
-            
+
+
+
+    
+    acc_inner_train = accuracy(model_step, train_dl)
+    acc_inner_test = accuracy(model_step, test_dl)
+         
 
     model_meta.load_state_dict(model.state_dict())
 
     if (iteration%10) == 0:
         acc_ = 0
-        for mtr, mte in dls :
+        for j in range(len(dlsdt)):
+            mtrd, mtrt = dlsdt[j]
             for i in range(meta_eval_epochs):
-                l = train_on_batch_dl(model_meta, mtr, loss_fn, meta_opt_fn)
+                l = train_on_batch(model_meta, mtrd, mtrt, loss_fn, meta_opt_fn)
 
+            mtr, mte = dls[j]
             acc_ += accuracy(model_meta, mte) 
         acc_ /= len(dls)
         acc_s.append(acc_)

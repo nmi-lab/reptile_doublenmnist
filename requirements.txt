@@ -1,0 +1,3 @@
+torchneuromorphic>=0.3
+tqdm
+torch
